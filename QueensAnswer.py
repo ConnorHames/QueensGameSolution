@@ -1,7 +1,5 @@
 from PIL import Image, ImageDraw
 import numpy as np
-import time
-
 
 def solve(color_positions, board):
     if len(color_positions) == 0:  # If no colors left we are done
