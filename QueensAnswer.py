@@ -1,74 +1,162 @@
-import cv2
+from PIL import Image, ImageDraw
 import numpy as np
+import time
 
-def detect_board_and_colors(image_path):
-    # Load the image
-    image = cv2.imread(image_path)
-    if image is None:
-        print("Error: Could not load image.")
-        return
 
-    # Convert to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+def solve(color_positions, board):
+    if len(color_positions) == 0:  # If no colors left we are done
+        return True
+    else:
+        for pos in color_positions[0]:  # For all positions of first color in list
+            if board[pos[0], pos[1]] == 0:  # If unused
+                new_board = board.copy()
+                place_queen(pos, new_board)  # Place Queen
+                if solve(color_positions[1:], new_board):  # and solve for remaining colors
+                    board[:] = new_board  # passing back solution if solved
+                    return True
+    return False
 
-    # Apply threshold to get a binary image
-    _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
 
-    # Find contours
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def place_queen(position, board):
+    size = board.shape[0]
+    board[position[0], position[1]] = 1  # Mark given position
+    for n in range(size):  # Lock out same row and column
+        if board[position[0], n] == 0:
+            board[position[0], n] = -1
+        if board[n, position[1]] == 0:
+            board[n, position[1]] = -1
+    for row_offset in [-1, 1]:  # Corners, taking care of edges
+        current_row = 0 if position[0] + row_offset < 0 else size - 1 if position[0] + row_offset > size - 1 else position[0] + row_offset
+        for col_offset in [-1, 1]:
+            current_col = 0 if position[1] + col_offset < 0 else size - 1 if position[1] + col_offset > size - 1 else position[1] + col_offset
+            if board[current_row, current_col] == 0:
+                board[current_row, current_col] = -1
+    return
 
-    # Create an empty board mask
-    board = np.zeros_like(image)
 
-    # Draw the board as a filled polygon
-    cv2.drawContours(board, contours, -1, (255, 255, 255), thickness=cv2.FILLED)
+def load_image(image_path):
+    """Load the puzzle image (PNG file)."""
+    return Image.open(image_path)
 
-    # Convert image to HSV for better color detection
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    # Detect unique colors dynamically
-    unique_colors = {}
-    for y in range(0, hsv.shape[0], 10):
-        for x in range(0, hsv.shape[1], 10):
-            pixel = tuple(hsv[y, x])
-            if pixel not in unique_colors:
-                unique_colors[pixel] = 1
-            else:
-                unique_colors[pixel] += 1
+def grid_count(img):
+    np_img = np.array(img.convert("L"))  # Convert to grayscale array
+    np_img[np_img > 100] = 255  # Binary threshold
+    np_img[np_img <= 100] = 0
 
-    # Filter out less frequent colors (noise)
-    threshold = 50
-    detected_colors = {k: v for k, v in unique_colors.items() if v > threshold}
+    img_width, img_height = np_img.shape
+    vertical_count = 0  # Vertical count (array, not image!)
+    horizontal_count = 0  # Horizontal count
+    color_run_threshold = 20  # Threshold of color runs
+    run_count = 0
+    while vertical_count == 0:  # Repeat until midline not black
+        random_y = np.random.randint(10, img_height - 20)  # Random midpoint
+        for x in range(img_width):  # Move vertical
+            if np_img[x, random_y]:  # Color found
+                run_count += 1  # Increase run count
+            else:  # Black line found
+                if run_count >= color_run_threshold:  # Last color run over threshold?
+                    vertical_count += 1  # Then we have a square
+                run_count = 0  # Reset count
+    run_count = 0
+    while horizontal_count == 0:  # Repeat until midline not black
+        random_x = np.random.randint(10, img_width - 20)  # Random midpoint
+        for y in range(img_height):  # Move horizontal
+            if np_img[random_x, y]:  # Color found
+                run_count += 1  # Increase run count
+            else:  # Black line found
+                if run_count >= color_run_threshold:  # Last color run over threshold?
+                    horizontal_count += 1  # Then we have a square
+                run_count = 0  # Reset count
 
-    # Create a blank board with detected colors
-    reconstructed_board = np.zeros_like(image)
+    return max(vertical_count, horizontal_count)
 
-    cell_size = image.shape[0] // 8  # Assuming an 8x8 grid
-    for y in range(8):
-        for x in range(8):
-            pixel_pos = (y * cell_size + cell_size // 2, x * cell_size + cell_size // 2)
-            color_pixel = hsv[pixel_pos[0], pixel_pos[1]]
-            closest_color = min(detected_colors.keys(), key=lambda c: np.linalg.norm(np.array(c) - np.array(color_pixel)))
 
-            # Convert HSV to BGR before drawing
-            closest_color_bgr = cv2.cvtColor(np.uint8([[closest_color]]), cv2.COLOR_HSV2BGR)[0][0].tolist()
+def code_board(img):
+    img_width, img_height = img.size
 
-            cv2.rectangle(reconstructed_board, (x * cell_size, y * cell_size),
-                          ((x + 1) * cell_size, (y + 1) * cell_size),
-                          closest_color_bgr, thickness=-1)
+    grid_size = grid_count(img)
+    print(f"Detected grid size: {grid_size}x{grid_size}")
 
-    # Draw empty squares for potential queen placements
-    for y in range(8):
-        for x in range(8):
-            cv2.rectangle(reconstructed_board, (x * cell_size, y * cell_size),
-                          ((x + 1) * cell_size, (y + 1) * cell_size),
-                          (0, 0, 0), thickness=2)  # Black border for empty squares
+    # Identify solid colors and discard color compression artifacts:
+    colors = img.getcolors(maxcolors=10000)  # Get pixel count per color (overkill limit)
+    colors.sort(key=lambda x: 1e10 if sum(x[1]) == 0 else x[0], reverse=True)  # Sort in descending order, keep black first
+    colors = colors[:grid_size + 1]  # Keep "solid" colors (most frequent)
+    colors = colors[1:]  # Drop black
+    color_dict = dict()
+    for i in range(len(colors)):  # Color dictionary
+        color_dict[colors[i][1]] = i  # Code each RGB with an index
+    color_dict[(0, 0, 0)] = grid_size  # Recover black with code = color count
 
-    # Display reconstructed board
-    cv2.imshow("Reconstructed Board", reconstructed_board)
+    square_size = img_width // grid_size  # Approx. square size
 
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    color_board = np.zeros((grid_size, grid_size), dtype=np.int8)  # Empty colors board
 
-# Example usage
-detect_board_and_colors("queens_screenshot.png")
+    for row in range(grid_size):  # For each row
+        sample_y = square_size // 2 + row * square_size
+        for col in range(grid_size):  # and each column
+            sample_x = square_size // 2 + col * square_size  # get approx midpoint
+            increment = 1
+            color_code = -1
+            while color_code == -1:  # While we don't get a recognized color (compression artifacts get in the middle)
+                sample_x += increment  # shift sample point one pixel
+                color_code = color_dict.get(img.getpixel((sample_x, sample_y)), -1)  # and sample again
+                if color_code == grid_size:  # if reached the edge of the square revert shift direction
+                    sample_x -= increment
+                    increment = -increment
+                    grid_size = -1
+            color_board[row, col] = color_code  # Assign color code for current row and column to board representation
+
+    return color_board
+
+
+def color_lists(board):
+    size = board.shape[0]
+    color_positions = [[] for n in range(size)]  # List of empty lists, one per color
+    for row in range(size):  # For all rows
+        for col in range(size):  # For all columns
+            color_positions[board[row, col]].append((row, col))  # add square position to color list
+
+    color_positions.sort(key=lambda x: len(x))  # Sort list by number of squares of each color
+    return color_positions
+
+
+def apply_solution(board, img, queen_img):
+    grid_size = board.shape[0]  # row-col count
+    square_size = img.size[0] // grid_size  # approx square size
+
+    # Resize the queen image to fit within a grid square
+    queen_img = queen_img.resize((square_size, square_size), Image.LANCZOS)
+
+    for row in range(grid_size):
+        for col in range(grid_size):
+            if board[row, col] == 1:
+                # Calculate the position to paste the queen image
+                position = (col * square_size, row * square_size)
+                img.paste(queen_img, position, queen_img)  # Use the queen image as a mask to handle transparency
+
+    return
+
+
+if __name__ == '__main__':
+    image_path = input("Enter the path to your puzzle image (e.g., 'puzzle.png'): ")
+
+    img = load_image(image_path)  # Load the puzzle image
+    queen_img = load_image("queen.png")  # Load the queen image
+
+    img_width, img_height = img.size
+    if abs(1 - img_width / img_height) > 0.02:
+        print(1 - img_width / img_height, img.size)
+        img.show()
+        raise Exception("Wrong shape detected - verify your layout.")
+
+    color_board = code_board(img)  # Color coded board
+    color_positions = color_lists(color_board)  # Color position lists
+    board = np.zeros(color_board.shape, dtype=np.int8)  # initial empty board
+
+    if solve(color_positions, board):  # If solution can be found
+        apply_solution(board, img, queen_img)  # Apply solution to image with queen images
+        img.show()  # Show completed board
+        print("Solved")
+    else:
+        print("Problem has no solution")
